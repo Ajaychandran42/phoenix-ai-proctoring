@@ -31,10 +31,18 @@ const OBJECT_DETECT_STREAK_REQUIRED = 3;
 // enough to smooth single-frame jitter without meaningfully delaying
 // detection of a sustained look-away.
 const GAZE_SMOOTHING_WINDOW = 5;
-// Below this average brightness (0-255 grayscale), calibration is blocked
-// until lighting improves — calibrating in bad light bakes an unreliable
-// baseline into the whole exam.
-const MIN_CALIBRATION_BRIGHTNESS = 40;
+// Below this average brightness (0-255 grayscale), the lighting warning
+// shows — but this is a NUDGE, not a hard block (see the override button
+// below). Lowered from an earlier 40, which was stricter than many laptop
+// webcams read under ordinary indoor lighting, especially in backlit rooms
+// where average brightness reads low even though the frame looks bright.
+const MIN_CALIBRATION_BRIGHTNESS = 25;
+// How long the warning shows before "Continue Anyway" appears. Long enough
+// that a student who CAN fix their lighting (turn on a lamp, face a window)
+// has a moment to do so and see it take effect; short enough that someone
+// stuck with their actual lighting (a dim venue, unavoidable backlighting)
+// isn't trapped on this screen.
+const LIGHTING_OVERRIDE_DELAY_MS = 6000;
 
 const CELL_PHONE_LABELS = new Set(['cell phone']);
 const PROHIBITED_LABELS = new Set(['book', 'laptop', 'keyboard', 'remote', 'tv', 'mouse']);
@@ -127,7 +135,9 @@ export default function ExamRoom() {
   const [systemCheckPassed, setSystemCheckPassed] = useState(false);
   const [calibrating, setCalibrating] = useState(false);
   const [calibrationProgress, setCalibrationProgress] = useState(0);
-  const [brightness, setBrightness] = useState(null); // Phase 1: live lighting reading, gates calibration
+  const [brightness, setBrightness] = useState(null); // live lighting reading, shown to the student
+  const [lightingWarnedAt, setLightingWarnedAt] = useState(null); // when low light was first seen, for the override timer
+  const [lightingOverride, setLightingOverride] = useState(false); // student chose "Continue Anyway"
   const [showDebug, setShowDebug] = useState(false);
   const [ready, setReady] = useState(false);
   
@@ -207,6 +217,22 @@ export default function ExamRoom() {
     objectDetectorRef.current?.close?.();
     if (bgSubtractorRef.current) bgSubtractorRef.current.delete();
     if (prevFrameMatRef.current) prevFrameMatRef.current.delete();
+  }, []);
+
+  // Defense-in-depth for a hard tab close/refresh: the browser already
+  // releases camera tracks on page unload regardless of our JS, and the
+  // unmount cleanup below already handles every in-app exit (submit,
+  // terminate, navigating away) — but 'pagehide' fires reliably across
+  // browsers right before a hard close in a way React's own cleanup timing
+  // isn't guaranteed to, so this is a direct, synchronous belt-and-braces
+  // stop of just the tracks (not the full stopCamera, since there's no need
+  // to tear down the CV models on a page that's about to be gone anyway).
+  useEffect(() => {
+    const stopTracksOnly = () => {
+      videoRef.current?.srcObject?.getTracks()?.forEach((t) => t.stop());
+    };
+    window.addEventListener('pagehide', stopTracksOnly);
+    return () => window.removeEventListener('pagehide', stopTracksOnly);
   }, []);
 
   const terminateExam = useCallback(
@@ -751,11 +777,12 @@ export default function ExamRoom() {
     setAnswers({ ...answersRef.current });
   };
   
-  // Phase 1: samples brightness every 500ms while the student is on the
-  // system-check screen, so "Start Calibration" can be gated on adequate
-  // lighting — calibrating in bad light bakes an unreliable gaze baseline
-  // into the entire exam, since FaceLandmarker's own accuracy degrades in
-  // low light too.
+  // Samples brightness every 500ms while the student is on the system-check
+  // screen, so low light can be flagged before calibration — calibrating in
+  // bad light bakes an unreliable gaze baseline into the whole exam. This is
+  // advisory, not a hard block: see `lightingOk` below, which always allows
+  // proceeding once LIGHTING_OVERRIDE_DELAY_MS has passed, regardless of the
+  // reading. A gate with no way through it is worse than no gate at all.
   useEffect(() => {
     if (!ready || systemCheckPassed) return;
     const interval = setInterval(() => {
@@ -769,12 +796,30 @@ export default function ExamRoom() {
       const { data } = ctx.getImageData(0, 0, 32, 24);
       let sum = 0;
       for (let i = 0; i < data.length; i += 4) sum += (data[i] + data[i + 1] + data[i + 2]) / 3;
-      setBrightness(sum / (32 * 24));
+      const reading = sum / (32 * 24);
+      setBrightness(reading);
+      if (reading < MIN_CALIBRATION_BRIGHTNESS) {
+        setLightingWarnedAt((prev) => prev ?? Date.now());
+      } else {
+        setLightingWarnedAt(null);
+        setLightingOverride(false);
+      }
     }, 500);
     return () => clearInterval(interval);
   }, [ready, systemCheckPassed]);
 
-  const lightingOk = brightness !== null && brightness >= MIN_CALIBRATION_BRIGHTNESS;
+  // "Continue Anyway" becomes available after a few seconds of a low
+  // reading, re-checked every second so the button doesn't need a page
+  // interaction to appear.
+  const [nowTick, setNowTick] = useState(Date.now());
+  useEffect(() => {
+    if (!lightingWarnedAt) return;
+    const t = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [lightingWarnedAt]);
+  const overrideAvailable = lightingWarnedAt !== null && nowTick - lightingWarnedAt >= LIGHTING_OVERRIDE_DELAY_MS;
+
+  const lightingOk = brightness === null || brightness >= MIN_CALIBRATION_BRIGHTNESS || lightingOverride;
 
   const runCalibration = useCallback(async () => {
     setCalibrating(true);
@@ -862,13 +907,22 @@ export default function ExamRoom() {
           {ready && !calibrating && (
             <>
               {brightness !== null && (
-                <p style={{ color: lightingOk ? '#4ade80' : '#f87171' }}>
-                  {lightingOk ? 'Lighting looks good.' : 'Lighting is too dim — move to a brighter spot before continuing.'}
+                <p style={{ color: lightingOk && !lightingOverride ? '#4ade80' : '#f87171' }}>
+                  {lightingOverride
+                    ? `Continuing with current lighting (reading: ${brightness.toFixed(0)}). Detection accuracy may be reduced.`
+                    : lightingOk
+                    ? `Lighting looks good. (reading: ${brightness.toFixed(0)})`
+                    : `Lighting is low (reading: ${brightness.toFixed(0)}, need ${MIN_CALIBRATION_BRIGHTNESS}+) — try facing a light source rather than having one behind you.`}
                 </p>
               )}
               <button className="finish-btn" onClick={runCalibration} disabled={!lightingOk}>
                 {lightingOk ? 'Start Calibration' : 'Waiting for better lighting…'}
               </button>
+              {!lightingOk && overrideAvailable && (
+                <div style={{ marginTop: '10px' }}>
+                  <button onClick={() => setLightingOverride(true)}>Continue Anyway</button>
+                </div>
+              )}
             </>
           )}
           {calibrating && (

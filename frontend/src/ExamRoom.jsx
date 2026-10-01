@@ -349,6 +349,9 @@ export default function ExamRoom() {
         if (!qRes.ok) throw new Error('Failed to load exam');
         const { exam, questions } = await qRes.json();
         if (cancelled) return;
+        if (!Array.isArray(questions) || questions.length === 0) {
+          throw new Error('This exam has no questions. Please contact your instructor.');
+        }
         setExam(exam);
         // Session creation (and the server's started_at timestamp) is
         // deliberately deferred until calibration actually finishes — see
@@ -356,7 +359,16 @@ export default function ExamRoom() {
         // since it doesn't start any clock; only holding onto the raw list
         // for beginExam() to shuffle once the session (and its id, used as
         // the shuffle seed) actually exists.
-        rawQuestionsRef.current = questions;
+        // Mount the system-check screen now. It owns the video element that
+        // getUserMedia attaches to below. Previously questions were held only
+        // in a ref until calibration finished, so the component kept rendering
+        // "Loading exam…", the video ref never mounted, and initialization
+        // could never reach the calibration screen.
+        rawQuestionsRef.current = questions.map((question) => ({ ...question }));
+        setQuestions(questions.map((question) => ({ ...question })));
+        setOriginalQuestionsMap(
+          Object.fromEntries(questions.map((question) => [question.id, [1, 2, 3, 4]]))
+        );
 
         setLoadingStep('Starting camera…');
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -374,8 +386,12 @@ export default function ExamRoom() {
         }
 
         setLoadingStep('Loading vision runtime…');
-        const filesetResolver = await FilesetResolver.forVisionTasks(
-          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.17/wasm'
+        const filesetResolver = await withTimeout(
+          FilesetResolver.forVisionTasks(
+            'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.17/wasm'
+          ),
+          25000,
+          'The vision runtime took too long to load. Check your internet connection, then reload.'
         );
 
         // Loaded one at a time rather than via Promise.all: two heavy WASM
@@ -412,24 +428,7 @@ export default function ExamRoom() {
         );
         if (cancelled) return;
 
-        setLoadingStep('Loading object detection model…');
-        const objectDetector = await withTimeout(
-          ObjectDetector.createFromOptions(filesetResolver, {
-            baseOptions: {
-              modelAssetPath:
-                'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/int8/1/efficientdet_lite0.tflite',
-              delegate: 'CPU',
-            },
-            scoreThreshold: OBJECT_SCORE_THRESHOLD,
-            runningMode: 'VIDEO',
-          }),
-          25000,
-          'The object detection model took too long to load. Try a different browser, or reload.'
-        );
-        if (cancelled) return;
-
         faceLandmarkerRef.current = faceLandmarker;
-        objectDetectorRef.current = objectDetector;
 
         if (window.cv) {
            bgSubtractorRef.current = new window.cv.BackgroundSubtractorMOG2(500, 16, true);
@@ -438,6 +437,40 @@ export default function ExamRoom() {
 
         setLoadingStep('Ready');
         setReady(true);
+
+        // The face model is the required, lightweight camera check. EfficientDet
+        // is much larger and must never stop a student from entering an exam if
+        // its CDN download or compilation is slow. Load it after the system
+        // check is usable; object-related violations are simply unavailable if
+        // this optional enhancement cannot load.
+        setLoadingStep('Loading optional object detection…');
+        try {
+          const objectDetector = await withTimeout(
+            ObjectDetector.createFromOptions(filesetResolver, {
+              baseOptions: {
+                modelAssetPath:
+                  'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/int8/1/efficientdet_lite0.tflite',
+                delegate: 'CPU',
+              },
+              scoreThreshold: OBJECT_SCORE_THRESHOLD,
+              runningMode: 'VIDEO',
+            }),
+            25000,
+            'Object detection model took too long to load.'
+          );
+          if (cancelled) {
+            objectDetector.close?.();
+            return;
+          }
+          objectDetectorRef.current = objectDetector;
+        } catch (objectDetectionError) {
+          // Do not turn an optional integrity signal into an exam-blocking
+          // error. The camera, face-presence, gaze, tab and fullscreen checks
+          // continue to work.
+          console.warn('Object detection unavailable:', objectDetectionError);
+        } finally {
+          if (!cancelled) setLoadingStep('Ready');
+        }
         
       } catch (err) {
         console.error('ExamRoom init failed:', err);

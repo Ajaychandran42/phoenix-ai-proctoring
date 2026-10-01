@@ -19,10 +19,10 @@ teacher-only route. No sign-up/domain restriction in this build.
 
 **Exam taking (student) — `ExamRoom.jsx`**
 This is the significantly rewritten core of this build:
-- **Pre-exam system check + calibration**: camera preview, a live lighting
-  reading gates the button (`MIN_CALIBRATION_BRIGHTNESS = 40`; "Start
-  Calibration" stays disabled and shows "Waiting for better lighting…" below
-  that), then a ~1-second "Start Calibration" step that samples 30 frames of
+- **Pre-exam system check + calibration**: camera preview with a live lighting
+  advisory (it does not block a student whose integrated laptop webcam reports
+  a dark auto-exposure value), then a lightweight calibration step that samples
+  12 frames of
   the student looking straight at the screen to compute a baseline
   yaw/pitch. Gaze deviation during the actual exam is measured as *deviation
   from this baseline*, not a fixed absolute angle — this is what makes gaze

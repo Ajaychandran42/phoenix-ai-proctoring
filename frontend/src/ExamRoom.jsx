@@ -31,7 +31,6 @@ const OBJECT_DETECT_STREAK_REQUIRED = 3;
 // enough to smooth single-frame jitter without meaningfully delaying
 // detection of a sustained look-away.
 const GAZE_SMOOTHING_WINDOW = 5;
-<<<<<<< HEAD
 // Below this average brightness (0-255 grayscale), the lighting warning
 // shows — but this is a NUDGE, not a hard block (see the override button
 // below). Lowered from an earlier 40, which was stricter than many laptop
@@ -47,14 +46,6 @@ const LIGHTING_OVERRIDE_DELAY_MS = 6000;
 // Calibration gives up waiting for 30 clean samples after this long and
 // proceeds with whatever it collected — see the comment in runCalibration.
 const CALIBRATION_TIMEOUT_MS = 20000;
-=======
-// Laptop webcams frequently report darker frames while their auto-exposure is
-// settling, even in a perfectly usable room. This is an advisory threshold,
-// never a hard gate: students can still calibrate, while the live face checks
-// remain responsible for detecting an actually unusable camera feed.
-const LOW_LIGHT_ADVISORY_BRIGHTNESS = 20;
-const CALIBRATION_SAMPLE_COUNT = 12;
->>>>>>> aff5b93 (bug fixes)
 
 const CELL_PHONE_LABELS = new Set(['cell phone']);
 const PROHIBITED_LABELS = new Set(['book', 'laptop', 'keyboard', 'remote', 'tv', 'mouse']);
@@ -100,15 +91,6 @@ function withTimeout(promise, ms, message) {
     promise,
     new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms)),
   ]);
-}
-
-async function getResponseError(response, fallback) {
-  try {
-    const body = await response.json();
-    return body.error || body.message || fallback;
-  } catch {
-    return fallback;
-  }
 }
 
 function formatTime(totalSeconds) {
@@ -157,14 +139,10 @@ export default function ExamRoom() {
   const [systemCheckPassed, setSystemCheckPassed] = useState(false);
   const [calibrating, setCalibrating] = useState(false);
   const [calibrationProgress, setCalibrationProgress] = useState(0);
-<<<<<<< HEAD
   const [startingExam, setStartingExam] = useState(false); // brief gap between calibration finishing and the session actually being created
   const [brightness, setBrightness] = useState(null); // live lighting reading, shown to the student
   const [lightingWarnedAt, setLightingWarnedAt] = useState(null); // when low light was first seen, for the override timer
   const [lightingOverride, setLightingOverride] = useState(false); // student chose "Continue Anyway"
-=======
-  const [brightness, setBrightness] = useState(null);
->>>>>>> aff5b93 (bug fixes)
   const [showDebug, setShowDebug] = useState(false);
   const [ready, setReady] = useState(false);
   
@@ -367,20 +345,11 @@ export default function ExamRoom() {
 
     async function init() {
       try {
-        setLoadingStep('Loading exam questions…');
-        const qRes = await withTimeout(
-          authedFetch(`/api/exams/${examId}/questions`),
-          45000,
-          'The exam server is taking too long to respond. Please reload and try again.'
-        );
-        if (!qRes.ok) throw new Error(await getResponseError(qRes, 'Failed to load exam'));
+        const qRes = await authedFetch(`/api/exams/${examId}/questions`);
+        if (!qRes.ok) throw new Error('Failed to load exam');
         const { exam, questions } = await qRes.json();
         if (cancelled) return;
-        if (!Array.isArray(questions) || questions.length === 0) {
-          throw new Error('This exam has no questions yet. Please contact your instructor.');
-        }
         setExam(exam);
-<<<<<<< HEAD
         // Session creation (and the server's started_at timestamp) is
         // deliberately deferred until calibration actually finishes — see
         // beginExam() below. Fetching questions here is safe to do early
@@ -388,75 +357,11 @@ export default function ExamRoom() {
         // for beginExam() to shuffle once the session (and its id, used as
         // the shuffle seed) actually exists.
         rawQuestionsRef.current = questions;
-=======
-        
-        setLoadingStep('Starting exam session…');
-        const sRes = await withTimeout(
-          authedFetch('/api/session/start', {
-            method: 'POST',
-            body: JSON.stringify({
-              examId,
-              candidateName: user?.fullName,
-              candidateEmail: user?.primaryEmailAddress?.emailAddress,
-            }),
-          }),
-          45000,
-          'The exam server is taking too long to start your session. Please reload and try again.'
-        );
-        if (!sRes.ok) throw new Error(await getResponseError(sRes, 'Failed to start session'));
-        const { session, exam: examData } = await sRes.json();
-        if (cancelled) return;
-        
-        let shuffledQuestions = [...questions];
-        let originalMap = {};
-        if (examData?.shuffle_questions) {
-          const rng = seedrandom(session.id);
-          shuffledQuestions.sort(() => 0.5 - rng());
-          shuffledQuestions.forEach(q => {
-            let opts = [q.option_1, q.option_2, q.option_3, q.option_4];
-            let originalIndices = [1,2,3,4];
-            for(let i=3; i>0; i--) {
-              const j = Math.floor(rng() * (i + 1));
-              [opts[i], opts[j]] = [opts[j], opts[i]];
-              [originalIndices[i], originalIndices[j]] = [originalIndices[j], originalIndices[i]];
-            }
-            q.option_1 = opts[0]; q.option_2 = opts[1]; q.option_3 = opts[2]; q.option_4 = opts[3];
-            originalMap[q.id] = originalIndices;
-          });
-        } else {
-          shuffledQuestions.forEach(q => { originalMap[q.id] = [1,2,3,4]; });
-        }
-        setOriginalQuestionsMap(originalMap);
-        setQuestions(shuffledQuestions);
-
-        sessionIdRef.current = session.id;
-        if (session.status !== 'in_progress') {
-          setTerminated(true);
-          return;
-        }
-        if (session.answers) {
-          answersRef.current = session.answers;
-          setAnswers(session.answers);
-        }
-        if (session.started_at) {
-           const elapsedSecs = Math.floor((Date.now() - new Date(session.started_at).getTime()) / 1000);
-           setSecondsLeft(Math.max((exam.duration_minutes * 60) - elapsedSecs, 0));
-        } else {
-           setSecondsLeft(exam.duration_minutes * 60);
-        }
->>>>>>> aff5b93 (bug fixes)
 
         setLoadingStep('Starting camera…');
-        if (!navigator.mediaDevices?.getUserMedia) {
-          throw new Error('This browser does not support camera access. Use a current desktop browser and try again.');
-        }
-        const stream = await withTimeout(
-          navigator.mediaDevices.getUserMedia({
-            video: { width: 1280, height: 720, facingMode: 'user' },
-          }),
-          20000,
-          'Camera access did not start in time. Check that no other app is using the camera, then reload.'
-        );
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 1280, height: 720, facingMode: 'user' },
+        });
         if (cancelled) return;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
@@ -469,12 +374,8 @@ export default function ExamRoom() {
         }
 
         setLoadingStep('Loading vision runtime…');
-        const filesetResolver = await withTimeout(
-          FilesetResolver.forVisionTasks(
-            'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.17/wasm'
-          ),
-          25000,
-          'The vision runtime took too long to load. Check your internet connection, then reload.'
+        const filesetResolver = await FilesetResolver.forVisionTasks(
+          'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.17/wasm'
         );
 
         // Loaded one at a time rather than via Promise.all: two heavy WASM
@@ -839,18 +740,12 @@ export default function ExamRoom() {
     setAnswers({ ...answersRef.current });
   };
   
-<<<<<<< HEAD
   // Samples brightness every 500ms while the student is on the system-check
   // screen, so low light can be flagged before calibration — calibrating in
   // bad light bakes an unreliable gaze baseline into the whole exam. This is
   // advisory, not a hard block: see `lightingOk` below, which always allows
   // proceeding once LIGHTING_OVERRIDE_DELAY_MS has passed, regardless of the
   // reading. A gate with no way through it is worse than no gate at all.
-=======
-  // Use a tiny, infrequent canvas sample to show a lighting advisory without
-  // adding meaningful work on lower-spec laptops. Brightness must not prevent
-  // an exam from starting because laptop webcam exposure varies widely.
->>>>>>> aff5b93 (bug fixes)
   useEffect(() => {
     if (!ready || systemCheckPassed) return;
     const interval = setInterval(() => {
@@ -864,7 +759,6 @@ export default function ExamRoom() {
       const { data } = ctx.getImageData(0, 0, 32, 24);
       let sum = 0;
       for (let i = 0; i < data.length; i += 4) sum += (data[i] + data[i + 1] + data[i + 2]) / 3;
-<<<<<<< HEAD
       const reading = sum / (32 * 24);
       setBrightness(reading);
       if (reading < MIN_CALIBRATION_BRIGHTNESS) {
@@ -957,14 +851,6 @@ export default function ExamRoom() {
       setStartingExam(false);
     }
   }, [authedFetch, examId, user, exam]);
-=======
-      setBrightness(sum / (32 * 24));
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [ready, systemCheckPassed]);
-
-  const lightingAdequate = brightness !== null && brightness >= LOW_LIGHT_ADVISORY_BRIGHTNESS;
->>>>>>> aff5b93 (bug fixes)
 
   const runCalibration = useCallback(async () => {
     setCalibrating(true);
@@ -973,16 +859,10 @@ export default function ExamRoom() {
     let sumYaw = 0;
     let sumPitch = 0;
     let frames = 0;
-<<<<<<< HEAD
 
     const sampleCount = 30;
     const startedAt = performance.now();
 
-=======
-    
-    const sampleCount = CALIBRATION_SAMPLE_COUNT;
-    
->>>>>>> aff5b93 (bug fixes)
     const calibrateLoop = () => {
        const video = videoRef.current;
        if (!video || !faceLandmarkerRef.current) return requestAnimationFrame(calibrateLoop);
@@ -1055,13 +935,8 @@ export default function ExamRoom() {
     );
   }
 
-  if (!exam) {
-    return (
-      <div className="centered">
-        <p>Loading exam…</p>
-        <p className="muted">{loadingStep}</p>
-      </div>
-    );
+  if (!exam || questions.length === 0) {
+    return <div className="centered">Loading exam…</div>;
   }
 
   if (!systemCheckPassed) {
@@ -1073,7 +948,6 @@ export default function ExamRoom() {
           {ready && startingExam && <p>Starting exam…</p>}
           {ready && !calibrating && !startingExam && (
             <>
-<<<<<<< HEAD
               {brightness !== null && (
                 <p style={{ color: lightingOk && !lightingOverride ? '#4ade80' : '#f87171' }}>
                   {lightingOverride
@@ -1085,17 +959,6 @@ export default function ExamRoom() {
               )}
               <button className="finish-btn" onClick={runCalibration} disabled={!lightingOk}>
                 {lightingOk ? 'Start Calibration' : 'Waiting for better lighting…'}
-=======
-               {brightness !== null && (
-                 <p style={{ color: lightingAdequate ? '#4ade80' : '#fbbf24' }}>
-                   {lightingAdequate
-                     ? 'Lighting looks good.'
-                     : 'Low light detected. You can continue, but better lighting improves face detection.'}
-                 </p>
-               )}
-               <button className="finish-btn" onClick={runCalibration}>
-                 Start Calibration
->>>>>>> aff5b93 (bug fixes)
               </button>
               {!lightingOk && overrideAvailable && (
                 <div style={{ marginTop: '10px' }}>

@@ -43,6 +43,9 @@ const MIN_CALIBRATION_BRIGHTNESS = 25;
 // stuck with their actual lighting (a dim venue, unavoidable backlighting)
 // isn't trapped on this screen.
 const LIGHTING_OVERRIDE_DELAY_MS = 6000;
+// Calibration gives up waiting for 30 clean samples after this long and
+// proceeds with whatever it collected — see the comment in runCalibration.
+const CALIBRATION_TIMEOUT_MS = 20000;
 
 const CELL_PHONE_LABELS = new Set(['cell phone']);
 const PROHIBITED_LABELS = new Set(['book', 'laptop', 'keyboard', 'remote', 'tv', 'mouse']);
@@ -114,6 +117,7 @@ export default function ExamRoom() {
   const lastViolationAtRef = useRef({});
   const warningCountRef = useRef(0);
   const answersRef = useRef({});
+  const rawQuestionsRef = useRef([]); // unshuffled questions fetched in init(), shuffled in beginExam() once a session exists
   
   const bgSubtractorRef = useRef(null);
   const prevFrameMatRef = useRef(null);
@@ -135,6 +139,7 @@ export default function ExamRoom() {
   const [systemCheckPassed, setSystemCheckPassed] = useState(false);
   const [calibrating, setCalibrating] = useState(false);
   const [calibrationProgress, setCalibrationProgress] = useState(0);
+  const [startingExam, setStartingExam] = useState(false); // brief gap between calibration finishing and the session actually being created
   const [brightness, setBrightness] = useState(null); // live lighting reading, shown to the student
   const [lightingWarnedAt, setLightingWarnedAt] = useState(null); // when low light was first seen, for the override timer
   const [lightingOverride, setLightingOverride] = useState(false); // student chose "Continue Anyway"
@@ -345,56 +350,13 @@ export default function ExamRoom() {
         const { exam, questions } = await qRes.json();
         if (cancelled) return;
         setExam(exam);
-        
-        const sRes = await authedFetch('/api/session/start', {
-          method: 'POST',
-          body: JSON.stringify({
-            examId,
-            candidateName: user?.fullName,
-            candidateEmail: user?.primaryEmailAddress?.emailAddress,
-          }),
-        });
-        if (!sRes.ok) throw new Error('Failed to start session');
-        const { session, exam: examData } = await sRes.json();
-        if (cancelled) return;
-        
-        let shuffledQuestions = [...questions];
-        let originalMap = {};
-        if (examData?.shuffle_questions) {
-          const rng = seedrandom(session.id);
-          shuffledQuestions.sort(() => 0.5 - rng());
-          shuffledQuestions.forEach(q => {
-            let opts = [q.option_1, q.option_2, q.option_3, q.option_4];
-            let originalIndices = [1,2,3,4];
-            for(let i=3; i>0; i--) {
-              const j = Math.floor(rng() * (i + 1));
-              [opts[i], opts[j]] = [opts[j], opts[i]];
-              [originalIndices[i], originalIndices[j]] = [originalIndices[j], originalIndices[i]];
-            }
-            q.option_1 = opts[0]; q.option_2 = opts[1]; q.option_3 = opts[2]; q.option_4 = opts[3];
-            originalMap[q.id] = originalIndices;
-          });
-        } else {
-          shuffledQuestions.forEach(q => { originalMap[q.id] = [1,2,3,4]; });
-        }
-        setOriginalQuestionsMap(originalMap);
-        setQuestions(shuffledQuestions);
-
-        sessionIdRef.current = session.id;
-        if (session.status !== 'in_progress') {
-          setTerminated(true);
-          return;
-        }
-        if (session.answers) {
-          answersRef.current = session.answers;
-          setAnswers(session.answers);
-        }
-        if (session.started_at) {
-           const elapsedSecs = Math.floor((Date.now() - new Date(session.started_at).getTime()) / 1000);
-           setSecondsLeft(Math.max((exam.duration_minutes * 60) - elapsedSecs, 0));
-        } else {
-           setSecondsLeft(exam.duration_minutes * 60);
-        }
+        // Session creation (and the server's started_at timestamp) is
+        // deliberately deferred until calibration actually finishes — see
+        // beginExam() below. Fetching questions here is safe to do early
+        // since it doesn't start any clock; only holding onto the raw list
+        // for beginExam() to shuffle once the session (and its id, used as
+        // the shuffle seed) actually exists.
+        rawQuestionsRef.current = questions;
 
         setLoadingStep('Starting camera…');
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -434,13 +396,14 @@ export default function ExamRoom() {
             outputFacialTransformationMatrixes: true,
             runningMode: 'VIDEO',
             numFaces: 3,
-            // Phase 1: explicit confidence thresholds instead of the
-            // library defaults, tuned for exam conditions (a face roughly
-            // centered, webcam at laptop-screen height, indoor lighting).
-            // Presence and tracking are kept slightly more lenient than
-            // detection so a face that's briefly at an odd angle isn't
-            // immediately dropped and re-detected from scratch every frame.
-            minFaceDetectionConfidence: 0.6,
+            // Confidence thresholds kept at the library's own defaults
+            // (0.5) rather than raised further — a stricter 0.6 sounds more
+            // "accurate" in principle, but in practice it made face
+            // detection unreliable on lower-resolution/grainier laptop
+            // webcams, contributing to calibration never collecting enough
+            // confident samples. 0.5 is the better trade-off for real
+            // hardware, not just a controlled test environment.
+            minFaceDetectionConfidence: 0.5,
             minFacePresenceConfidence: 0.5,
             minTrackingConfidence: 0.5,
           }),
@@ -821,23 +784,92 @@ export default function ExamRoom() {
 
   const lightingOk = brightness === null || brightness >= MIN_CALIBRATION_BRIGHTNESS || lightingOverride;
 
+  // This is the real "exam starts now" moment: creates (or resumes) the
+  // session on the server, which is what timestamps started_at — deferred
+  // to here specifically so that camera setup, model loading, the lighting
+  // check, and calibration itself (all of which can take a while, especially
+  // on a slower laptop) never eat into the exam's timed duration. Previously
+  // the session was created at page load, before any of that setup, which
+  // on a short test-duration exam could burn through the whole clock before
+  // the student ever saw a question — causing an immediate auto-submit the
+  // instant calibration finished.
+  const beginExam = useCallback(async () => {
+    setStartingExam(true);
+    try {
+      const sRes = await authedFetch('/api/session/start', {
+        method: 'POST',
+        body: JSON.stringify({
+          examId,
+          candidateName: user?.fullName,
+          candidateEmail: user?.primaryEmailAddress?.emailAddress,
+        }),
+      });
+      if (!sRes.ok) throw new Error('Failed to start session');
+      const { session, exam: examData } = await sRes.json();
+
+      let shuffledQuestions = [...rawQuestionsRef.current];
+      let originalMap = {};
+      if (examData?.shuffle_questions) {
+        const rng = seedrandom(session.id);
+        shuffledQuestions.sort(() => 0.5 - rng());
+        shuffledQuestions.forEach((q) => {
+          let opts = [q.option_1, q.option_2, q.option_3, q.option_4];
+          let originalIndices = [1, 2, 3, 4];
+          for (let i = 3; i > 0; i--) {
+            const j = Math.floor(rng() * (i + 1));
+            [opts[i], opts[j]] = [opts[j], opts[i]];
+            [originalIndices[i], originalIndices[j]] = [originalIndices[j], originalIndices[i]];
+          }
+          q.option_1 = opts[0]; q.option_2 = opts[1]; q.option_3 = opts[2]; q.option_4 = opts[3];
+          originalMap[q.id] = originalIndices;
+        });
+      } else {
+        shuffledQuestions.forEach((q) => { originalMap[q.id] = [1, 2, 3, 4]; });
+      }
+      setOriginalQuestionsMap(originalMap);
+      setQuestions(shuffledQuestions);
+
+      sessionIdRef.current = session.id;
+      if (session.status !== 'in_progress') {
+        setTerminated(true);
+        return;
+      }
+      if (session.answers) {
+        answersRef.current = session.answers;
+        setAnswers(session.answers);
+      }
+      // started_at now reflects this exact moment (or, for a resumed
+      // session, the original true start) — either way, the right thing to
+      // measure elapsed time against.
+      const elapsedSecs = Math.floor((Date.now() - new Date(session.started_at).getTime()) / 1000);
+      setSecondsLeft(Math.max(exam.duration_minutes * 60 - elapsedSecs, 0));
+
+      setSystemCheckPassed(true);
+    } catch (err) {
+      console.error('beginExam failed:', err);
+      setInitError(err.message || 'Failed to start the exam. Please reload and try again.');
+      setStartingExam(false);
+    }
+  }, [authedFetch, examId, user, exam]);
+
   const runCalibration = useCallback(async () => {
     setCalibrating(true);
     setCalibrationProgress(0);
-    
+
     let sumYaw = 0;
     let sumPitch = 0;
     let frames = 0;
-    
+
     const sampleCount = 30;
-    
+    const startedAt = performance.now();
+
     const calibrateLoop = () => {
        const video = videoRef.current;
        if (!video || !faceLandmarkerRef.current) return requestAnimationFrame(calibrateLoop);
-       
+
        const faceResult = faceLandmarkerRef.current.detectForVideo(video, performance.now());
        const faceCount = faceResult.faceLandmarks?.length || 0;
-       
+
        if (faceCount === 1) {
           const matrix = faceResult.facialTransformationMatrixes?.[0]?.data;
           if (matrix) {
@@ -848,19 +880,28 @@ export default function ExamRoom() {
             setCalibrationProgress(Math.floor((frames / sampleCount) * 100));
           }
        }
-       
-       if (frames < sampleCount) {
+
+       // Older/grainier laptop webcams can have trouble holding a confident
+       // single-face reading long enough to collect 30 good samples. Rather
+       // than calibration hanging forever waiting for a perfect run, give up
+       // on reaching the full sample count after CALIBRATION_TIMEOUT_MS and
+       // proceed with whatever was collected — even a partial baseline (or,
+       // in the worst case, 0 relative to raw angles) is better than being
+       // stuck on this screen indefinitely.
+       const timedOut = performance.now() - startedAt > CALIBRATION_TIMEOUT_MS;
+
+       if (frames < sampleCount && !timedOut) {
           requestAnimationFrame(calibrateLoop);
        } else {
-          cvStateRef.current.baselineYaw = sumYaw / sampleCount;
-          cvStateRef.current.baselinePitch = sumPitch / sampleCount;
+          cvStateRef.current.baselineYaw = frames > 0 ? sumYaw / frames : 0;
+          cvStateRef.current.baselinePitch = frames > 0 ? sumPitch / frames : 0;
           cvStateRef.current.calibrated = true;
           setCalibrating(false);
-          setSystemCheckPassed(true);
+          beginExam();
        }
     };
     requestAnimationFrame(calibrateLoop);
-  }, []);
+  }, [beginExam]);
 
   if (terminated) {
     return (
@@ -904,7 +945,8 @@ export default function ExamRoom() {
           <h2>System Check & Calibration</h2>
           <p>Please sit straight and look at the screen normally.</p>
           {!ready && <p>{loadingStep}</p>}
-          {ready && !calibrating && (
+          {ready && startingExam && <p>Starting exam…</p>}
+          {ready && !calibrating && !startingExam && (
             <>
               {brightness !== null && (
                 <p style={{ color: lightingOk && !lightingOverride ? '#4ade80' : '#f87171' }}>

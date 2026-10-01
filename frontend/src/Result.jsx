@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useAuth } from '@clerk/clerk-react';
 
-const API_URL = import.meta.env.VITE_API_URL;
+const API_URL = import.meta.env.VITE_API_URL || '';
 
 export default function Result() {
   const { getToken } = useAuth();
@@ -53,7 +53,11 @@ export default function Result() {
                 <td>
                   <span className={`status-pill status-${r.status}`}>{r.status}</span>
                 </td>
-                <td>{r.ended_at ? new Date(r.ended_at).toLocaleString() : '—'}</td>
+                <td>
+                  {r.ended_at
+                    ? new Date(r.ended_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) + ' IST'
+                    : '—'}
+                </td>
               </tr>
             ))}
             {results.length === 0 && (

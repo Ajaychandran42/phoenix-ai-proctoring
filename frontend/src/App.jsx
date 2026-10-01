@@ -7,6 +7,7 @@ import Result from './Result.jsx';
 import CreateExam from './CreateExam.jsx';
 import AddQuestions from './AddQuestions.jsx';
 import ExamLogs from './ExamLogs.jsx';
+import StudentReview from './StudentReview.jsx';
 
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
@@ -64,7 +65,8 @@ export default function App() {
             }
           />
 
-          {/* Full-screen exam-taking view — no sidebar, manages its own layout for the submitted state */}
+          {/* Full-screen exam-taking view — no sidebar; manages its own layout
+              for the submitted state via its own <Layout> wrapper. */}
           <Route
             path="/exam/:examId"
             element={
@@ -107,6 +109,19 @@ export default function App() {
                 <TeacherRoute>
                   <Layout>
                     <ExamLogs />
+                  </Layout>
+                </TeacherRoute>
+              </AuthGate>
+            }
+          />
+
+          <Route
+            path="/student-review/:examId/:userId"
+            element={
+              <AuthGate>
+                <TeacherRoute>
+                  <Layout>
+                    <StudentReview />
                   </Layout>
                 </TeacherRoute>
               </AuthGate>

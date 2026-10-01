@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: phoenix-ai-proctoring
+    runtime: node
+    plan: free
+    buildCommand: npm --prefix frontend ci && npm --prefix frontend run build && npm --prefix backend ci
+    startCommand: node backend/server.js
+    healthCheckPath: /api/health
+    envVars:
+      # Required at build time. This value is safe to expose in the browser,
+      # but keep it in Render rather than committing project credentials.
+      - key: VITE_CLERK_PUBLISHABLE_KEY
+        sync: false
+      # Required at runtime. Never expose either of these server-side secrets
+      # to the Vite frontend or commit them to the repository.
+      - key: CLERK_SECRET_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      # Optional: comma-separated extra browser origins if another site needs
+      # to call this API. The combined Render app works without setting it.
+      - key: CORS_ORIGIN
+        sync: false

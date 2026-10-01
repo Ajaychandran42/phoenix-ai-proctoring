@@ -1,10 +1,12 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useAuth } from '@clerk/clerk-react';
+import { useNavigate } from 'react-router-dom';
 
-const API_URL = import.meta.env.VITE_API_URL;
+const API_URL = import.meta.env.VITE_API_URL || '';
 
 export default function ExamLogs() {
   const { getToken } = useAuth();
+  const navigate = useNavigate();
   const [exams, setExams] = useState([]);
   const [examId, setExamId] = useState('');
   const [rows, setRows] = useState([]);
@@ -77,6 +79,7 @@ export default function ExamLogs() {
               <th>Multiple Face Count</th>
               <th>Cell Phone Count</th>
               <th>Prohibited Object Count</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -89,11 +92,14 @@ export default function ExamLogs() {
                 <td>{r.multiple_face_count}</td>
                 <td>{r.cell_phone_count}</td>
                 <td>{r.prohibited_object_count}</td>
+                <td>
+                  <button onClick={() => navigate(`/student-review/${examId}/${r.clerk_user_id}`)}>View</button>
+                </td>
               </tr>
             ))}
             {visibleRows.length === 0 && (
               <tr>
-                <td colSpan={7} style={{ textAlign: 'center' }}>
+                <td colSpan={8} style={{ textAlign: 'center' }}>
                   No data.
                 </td>
               </tr>

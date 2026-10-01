@@ -1,8 +1,11 @@
 import { useState } from 'react';
 import { useAuth } from '@clerk/clerk-react';
 
-const API_URL = import.meta.env.VITE_API_URL;
+const API_URL = import.meta.env.VITE_API_URL || '';
 const emptyForm = { name: '', totalQuestions: '', durationMinutes: '', liveAt: '', deadAt: '' };
+
+// Times entered in the form are treated as IST (UTC+5:30), converted to UTC before sending.
+const toUtcIso = (v) => new Date(`${v.length === 16 ? v + ':00' : v}+05:30`).toISOString();
 
 export default function CreateExam() {
   const { getToken } = useAuth();
@@ -24,8 +27,8 @@ export default function CreateExam() {
           name: form.name,
           totalQuestions: Number(form.totalQuestions),
           durationMinutes: Number(form.durationMinutes),
-          liveAt: form.liveAt,
-          deadAt: form.deadAt,
+          liveAt: toUtcIso(form.liveAt),
+          deadAt: toUtcIso(form.deadAt),
         }),
       });
       if (!res.ok) throw new Error((await res.json()).error || 'Failed to create exam');
@@ -57,11 +60,11 @@ export default function CreateExam() {
           <input required type="number" min="1" value={form.durationMinutes} onChange={update('durationMinutes')} />
         </label>
         <label>
-          Live Date and Time *
+          Live Date and Time (IST) *
           <input required type="datetime-local" value={form.liveAt} onChange={update('liveAt')} />
         </label>
         <label>
-          Dead Date and Time *
+          Dead Date and Time (IST) *
           <input required type="datetime-local" value={form.deadAt} onChange={update('deadAt')} />
         </label>
         <button type="submit" disabled={submitting}>

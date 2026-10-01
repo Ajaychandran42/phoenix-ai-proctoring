@@ -4,6 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Phoenix — AI Proctoring Platform</title>
+    <script>
+      // OpenCV.js is disabled for now: docs.opencv.org's build is large,
+      // non-SIMD, and known to tie up the main thread for a long time while
+      // it compiles -- on some machines this is what was freezing the exam
+      // page ("Page Unresponsive"). Every OpenCV-based check in ExamRoom.jsx
+      // is already gated behind `if (window.cv)`, so simply never setting
+      // `window.cv` makes the app fall back to its non-OpenCV checks
+      // (plain black-frame detection instead of blur/frozen-feed/background-
+      // subtraction) with no other code changes needed.
+      //
+      // To re-enable later, do it off the main thread instead of re-adding
+      // a blocking <script> tag here -- load opencv.js inside a Web Worker,
+      // or lazy-load it well after the exam is already running (e.g. via
+      // requestIdleCallback), so its compile time can never block first
+      // paint or model loading again.
+    </script>
   </head>
   <body>
     <div id="root"></div>

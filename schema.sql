@@ -1,21 +1,25 @@
 -- ============================================================
 -- Phoenix — AI Proctoring Platform — Supabase (PostgreSQL) Schema
 -- Accessed only via the backend, using the Service Role Key.
--- RLS intentionally left off per spec (backend is trusted).
+-- RLS is fine to enable — the backend's service_role key bypasses it;
+-- it just stops the anon key from reading/writing directly. No
+-- policies are needed since nothing legitimate uses the anon key here.
 -- ============================================================
 
 create extension if not exists "pgcrypto";
 
 -- ---------- Exams (created by teachers) ----------
 create table if not exists exams (
-  id               uuid primary key default gen_random_uuid(),
-  teacher_id       text not null,           -- Clerk user id
-  name             text not null,
-  total_questions  integer not null,
-  duration_minutes integer not null,
-  live_at          timestamptz not null,
-  dead_at          timestamptz not null,
-  created_at       timestamptz not null default now()
+  id                    uuid primary key default gen_random_uuid(),
+  teacher_id            text not null,           -- Clerk user id
+  name                  text not null,
+  total_questions       integer not null,
+  duration_minutes      integer not null,
+  live_at               timestamptz not null,
+  dead_at               timestamptz not null,
+  termination_threshold integer not null default 10,
+  shuffle_questions     boolean not null default true,
+  created_at            timestamptz not null default now()
 );
 
 create index if not exists idx_exams_teacher on exams (teacher_id);
@@ -42,10 +46,10 @@ create table if not exists candidate_sessions (
   clerk_user_id   text not null,
   candidate_name  text,
   candidate_email text,
-  exam_id         uuid not null references exams (id),
+  exam_id         uuid not null references exams (id) on delete cascade,
   status          text not null default 'in_progress'
                   check (status in ('in_progress', 'completed', 'terminated')),
-  answers         jsonb,       -- { "<question_id>": <selected_option 1-4> }
+  answers         jsonb not null default '{}'::jsonb, -- { "<question_id>": <selected_option 1-4> }
   score           integer,
   total_questions integer,
   started_at      timestamptz not null default now(),
@@ -54,6 +58,7 @@ create table if not exists candidate_sessions (
 
 create index if not exists idx_sessions_user on candidate_sessions (clerk_user_id);
 create index if not exists idx_sessions_exam on candidate_sessions (exam_id);
+create index if not exists idx_sessions_exam_user_status on candidate_sessions (exam_id, clerk_user_id, status);
 
 -- ---------- One row per detected anomaly / violation ----------
 create table if not exists anomaly_logs (
@@ -66,8 +71,12 @@ create table if not exists anomaly_logs (
   -- | 'PROHIBITED_OBJECT_DETECTED' | 'EXAM_TERMINATED'
   detail         text,
   warning_count_at_log integer not null default 0,
+  evidence_base64 text, -- small JPEG snapshot captured at the moment of the violation, data-URI encoded
   created_at     timestamptz not null default now()
 );
 
 create index if not exists idx_logs_session on anomaly_logs (session_id);
 create index if not exists idx_logs_user on anomaly_logs (clerk_user_id);
+
+-- Additive migration for installs that already ran the table above without this column.
+alter table anomaly_logs add column if not exists evidence_base64 text;

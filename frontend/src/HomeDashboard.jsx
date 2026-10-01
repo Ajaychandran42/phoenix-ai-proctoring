@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useAuth } from '@clerk/clerk-react';
 import { useNavigate } from 'react-router-dom';
 
-const API_URL = import.meta.env.VITE_API_URL;
+const API_URL = import.meta.env.VITE_API_URL || '';
 
 export default function HomeDashboard() {
   const { getToken } = useAuth();
@@ -49,6 +49,9 @@ export default function HomeDashboard() {
               <div className="exam-card-meta">
                 <span>{exam.total_questions}ques</span>
                 <span>{exam.duration_minutes} min</span>
+              </div>
+              <div className="muted">
+                Closes: {new Date(exam.dead_at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' })} IST
               </div>
             </div>
           </button>
